@@ -36,6 +36,46 @@
     ['#A16207', '#D19A3F']
   ];
 
+  // ---------------------------------------------------------------- 테마(컬렉션)
+  // 별을 모아 해금하는 배경 테마. accent 는 버튼·강조색에 쓰인다.
+  var THEMES = [
+    {
+      id: 'neon', name: '네온 퍼플', need: 0,
+      top: '#0B0A1F', bot: '#1A1038',
+      glow: ['rgba(255,92,147,0.18)', 'rgba(124,92,255,0.20)', 'rgba(46,230,197,0.10)'],
+      accent: ['#FF5C93', '#7C5CFF'], mark: '#FF5C93'
+    },
+    {
+      id: 'sunset', name: '선셋 오렌지', need: 24,
+      top: '#1A0A12', bot: '#2B1320',
+      glow: ['rgba(255,138,61,0.20)', 'rgba(255,92,147,0.16)', 'rgba(255,201,60,0.10)'],
+      accent: ['#FF8A3D', '#FF4D5E'], mark: '#FF8A3D'
+    },
+    {
+      id: 'ocean', name: '오션 블루', need: 72,
+      top: '#06121F', bot: '#0C2033',
+      glow: ['rgba(34,211,238,0.18)', 'rgba(59,130,246,0.20)', 'rgba(46,230,197,0.10)'],
+      accent: ['#22D3EE', '#3B82F6'], mark: '#22D3EE'
+    },
+    {
+      id: 'forest', name: '포레스트 민트', need: 150,
+      top: '#07170F', bot: '#0D2A1D',
+      glow: ['rgba(52,211,153,0.18)', 'rgba(163,230,53,0.14)', 'rgba(46,230,197,0.12)'],
+      accent: ['#34D399', '#A3E635'], mark: '#34D399'
+    },
+    {
+      id: 'candy', name: '캔디 핑크', need: 240,
+      top: '#1B0A1D', bot: '#33122E',
+      glow: ['rgba(236,72,153,0.22)', 'rgba(190,155,255,0.18)', 'rgba(255,143,198,0.12)'],
+      accent: ['#EC4899', '#BE9BFF'], mark: '#EC4899'
+    }
+  ];
+
+  function themeNow() {
+    for (var i = 0; i < THEMES.length; i++) if (THEMES[i].id === save.theme) return THEMES[i];
+    return THEMES[0];
+  }
+
   var canvas = document.getElementById('game');
   var ctx = canvas.getContext('2d');
 
@@ -44,9 +84,12 @@
   var save = {
     unlocked: 1,
     stars: {},
+    best: {},
+    theme: 'neon',
     sound: true,
     haptic: true,
-    seenHowto: false
+    seenHowto: false,
+    daily: { doneDate: '', streak: 0, bestStreak: 0, totalStars: 0 }
   };
 
   function loadSave() {
@@ -60,6 +103,30 @@
   }
   function writeSave() {
     try { window.localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {}
+  }
+
+  // 별 합계 = 레벨 별 + 데일리 별. 테마 해금에 쓰인다.
+  function totalStars() {
+    var n = 0;
+    for (var k in save.stars) n += (save.stars[k] || 0);
+    n += (save.daily.totalStars || 0);
+    return n;
+  }
+
+  function pad2(v) { return (v < 10 ? '0' : '') + v; }
+  function dateKey(d) {
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+  function todayKey() { return dateKey(new Date()); }
+  function yesterdayKey() {
+    var d = new Date();
+    d.setDate(d.getDate() - 1);
+    return dateKey(d);
+  }
+  function dailyDoneToday() { return save.daily.doneDate === todayKey(); }
+  function dailySeed() {
+    var d = new Date();
+    return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
   }
 
   // ---------------------------------------------------------------- 사운드
@@ -135,16 +202,22 @@
     hintUntil: 0,
     time: 0,
     won: false,
-    starsShown: 0
+    starsShown: 0,
+    dailyMode: false,
+    combo: 0,
+    comboUntil: 0,
+    comboAt: null
   };
 
   var ANIM_DUR = 0.26;
+  var particles = [];
 
   function now() { return S.time; }
 
   // ---------------------------------------------------------------- 레벨
   function startLevel(n) {
     S.endless = false;
+    S.dailyMode = false;
     S.level = n;
     var L = (window.LEVELS || [])[n - 1];
     if (!L) return;
@@ -168,26 +241,29 @@
     S.hintMove = null;
     S.screen = 'game';
     S.starsShown = 0;
+    S.combo = 0;
+    S.comboUntil = 0;
+    S.comboAt = null;
+    particles = [];
   }
 
   function restartLevel() {
     sfx('tap');
-    if (S.endless) {
+    if (S.dailyMode) {
+      startDaily();
+    } else if (S.endless) {
       startEndless(S.level);
     } else {
       startLevel(S.level);
     }
   }
 
-  // 무한 모드: 완성 상태에서 역이동을 되돌려 '항상 풀 수 있는' 배치를 만든다.
-  function startEndless(levelNo) {
-    var n = levelNo || (MAX_LEVEL + 1);
-    var colors = 8 + ((n - MAX_LEVEL - 1) % 4); // 8~11색 순환
-    var rng = mulberry32(n * 7919 + 13);
+  // 완성 상태에서 역이동을 되돌려 '항상 풀 수 있는' 배치를 만든다.
+  function genPuzzle(seed, colors, steps) {
+    var rng = mulberry32(seed);
     var tubes = [];
     for (var i = 0; i < colors; i++) tubes.push([i, i, i, i]);
     tubes.push([], []);
-    var steps = colors * 3 + 6;
     for (var s = 0; s < steps; s++) {
       var cands = [];
       for (var b = 0; b < tubes.length; b++) {
@@ -212,12 +288,39 @@
       var pick = cands[Math.floor(rng() * cands.length)];
       for (var q = 0; q < pick[2]; q++) tubes[pick[1]].push(tubes[pick[0]].pop());
     }
+    return tubes;
+  }
+
+  // 무한 모드: 레벨 번호를 시드로 항상 같은 배치를 만든다.
+  function startEndless(levelNo) {
+    var n = levelNo || (MAX_LEVEL + 1);
+    var colors = 8 + ((n - MAX_LEVEL - 1) % 4); // 8~11색 순환
     S.endless = true;
+    S.dailyMode = false;
     S.level = n;
-    S.tubes = tubes;
+    S.tubes = genPuzzle(n * 7919 + 13, colors, colors * 3 + 6);
     S.par = Math.round(colors * 3.4);
     S.solution = null;
     beginRound();
+    S.endless = true;
+    S.dailyMode = false;
+  }
+
+  // 데일리 챌린지: 날짜를 시드로 매일 하나씩, 모두가 같은 배치를 푼다.
+  function startDaily() {
+    var seed = dailySeed();
+    var colors = 7 + (seed % 3); // 7~9색
+    S.endless = false;
+    S.dailyMode = true;
+    S.level = 0;
+    S.tubes = genPuzzle(seed * 131 + 7, colors, colors * 3 + 5);
+    S.par = Math.round(colors * 3.2);
+    S.solution = null;
+    beginRound();
+    S.endless = false;
+    S.dailyMode = true;
+    S.level = 0;
+    S.screen = 'game';
   }
 
   function mulberry32(a) {
@@ -293,13 +396,20 @@
       S.tubes[a.from].pop();
       S.tubes[a.to].push(a.colors[a.cnt - 1 - k]);
     }
-    // 완성된 튜브 반짝임
+    // 완성된 튜브 반짝임 + 콤보 파티클
     var t = S.tubes[a.to];
     if (t.length === CAP) {
       var same = true;
       for (var j = 1; j < t.length; j++) if (t[j] !== t[0]) { same = false; break; }
       if (same) {
         S.flashes[a.to] = now();
+        S.combo = (S.combo || 0) + 1;
+        S.comboUntil = now() + 1.4;
+        var pos = tubePositions(S.tubes.length).list[a.to];
+        if (pos) {
+          burst(pos.x + tubeMetrics(S.tubes.length).tw / 2, pos.y + 150, t[0], S.combo >= 2 ? 26 : 16);
+          S.comboAt = { x: pos.x + tubeMetrics(S.tubes.length).tw / 2, y: pos.y + 40 };
+        }
         sfx('done'); haptic(18);
       }
     }
@@ -309,13 +419,69 @@
     }
   }
 
+  // ---------------------------------------------------------------- 파티클
+  function burst(x, y, ci, count) {
+    var p = PALETTE[ci % PALETTE.length];
+    for (var i = 0; i < count; i++) {
+      var ang = Math.random() * Math.PI * 2;
+      var sp = 120 + Math.random() * 320;
+      particles.push({
+        x: x, y: y,
+        vx: Math.cos(ang) * sp,
+        vy: Math.sin(ang) * sp - 160,
+        life: 0.55 + Math.random() * 0.5,
+        max: 1.05,
+        r: 5 + Math.random() * 8,
+        color: i % 3 === 0 ? p[1] : p[0]
+      });
+    }
+    if (particles.length > 260) particles = particles.slice(particles.length - 260);
+  }
+
+  function updateParticles(dt) {
+    for (var i = particles.length - 1; i >= 0; i--) {
+      var p = particles[i];
+      p.life -= dt;
+      if (p.life <= 0) { particles.splice(i, 1); continue; }
+      p.vy += 620 * dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vx *= 0.985;
+    }
+  }
+
+  function drawParticles() {
+    for (var i = 0; i < particles.length; i++) {
+      var p = particles[i];
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, p.life / 0.5));
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = p.color;
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
   function finishWin() {
     if (!S.won) return;
     var p = S.par || 1;
     var stars = S.moves <= Math.ceil(p * 1.15) ? 3 : (S.moves <= Math.ceil(p * 1.6) ? 2 : 1);
-    if (!S.endless) {
+    if (S.dailyMode) {
+      S.winStars = stars;
+      if (!dailyDoneToday()) {
+        save.daily.totalStars = (save.daily.totalStars || 0) + stars;
+        if (save.daily.doneDate === yesterdayKey()) save.daily.streak = (save.daily.streak || 0) + 1;
+        else save.daily.streak = 1;
+        save.daily.doneDate = todayKey();
+        if (save.daily.streak > (save.daily.bestStreak || 0)) save.daily.bestStreak = save.daily.streak;
+        writeSave();
+      }
+    } else if (!S.endless) {
       var prev = save.stars[S.level] || 0;
       if (stars > prev) save.stars[S.level] = stars;
+      var pb = save.best[S.level];
+      if (!pb || S.moves < pb) save.best[S.level] = S.moves;
       if (S.level + 1 > save.unlocked) save.unlocked = Math.min(S.level + 1, MAX_LEVEL + 1);
       writeSave();
     }
@@ -338,6 +504,7 @@
     S.undos--;
     S.sel = -1;
     S.hintMove = null;
+    S.combo = 0;
     sfx('tap'); haptic(8);
   }
 
@@ -455,6 +622,7 @@
       return;
     }
     // 앱 밖(웹 미리보기)에서는 광고 없이 바로 지급
+    grantReward(kind);
     onDone();
   }
   window.onRewardedEarned = function (kind) {
@@ -501,16 +669,17 @@
   }
 
   function bg() {
+    var th = themeNow();
     var g = ctx.createLinearGradient(0, 0, W * 0.4, H);
-    g.addColorStop(0, C.bgTop);
-    g.addColorStop(1, C.bgBot);
+    g.addColorStop(0, th.top);
+    g.addColorStop(1, th.bot);
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);
 
     var glows = [
-      [180, 220, 640, 'rgba(255,92,147,0.18)'],
-      [900, 460, 700, 'rgba(124,92,255,0.20)'],
-      [520, 1760, 760, 'rgba(46,230,197,0.10)']
+      [180, 220, 640, th.glow[0]],
+      [900, 460, 700, th.glow[1]],
+      [520, 1760, 760, th.glow[2]]
     ];
     for (var i = 0; i < glows.length; i++) {
       var rg = ctx.createRadialGradient(glows[i][0], glows[i][1], 0, glows[i][0], glows[i][1], glows[i][2]);
@@ -524,10 +693,13 @@
   function panel(x, y, w, h, r, alpha) {
     ctx.save();
     rr(x, y, w, h, r);
-    ctx.fillStyle = 'rgba(255,255,255,' + (alpha === undefined ? 0.07 : alpha) + ')';
+    var pg = ctx.createLinearGradient(x, y, x, y + h);
+    pg.addColorStop(0, 'rgba(34,24,66,' + (alpha === undefined ? 0.97 : Math.min(1, alpha + 0.86)) + ')');
+    pg.addColorStop(1, 'rgba(17,12,38,' + (alpha === undefined ? 0.97 : Math.min(1, alpha + 0.86)) + ')');
+    ctx.fillStyle = pg;
     ctx.fill();
     ctx.lineWidth = 2.5;
-    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.20)';
     ctx.stroke();
     ctx.restore();
   }
@@ -537,10 +709,11 @@
     var primary = opts.primary;
     ctx.save();
     if (primary) {
+      var th = themeNow();
       var g = ctx.createLinearGradient(x, y, x + w, y + h);
-      g.addColorStop(0, '#FF5C93');
-      g.addColorStop(1, '#7C5CFF');
-      ctx.shadowColor = 'rgba(255,92,147,0.45)';
+      g.addColorStop(0, th.accent[0]);
+      g.addColorStop(1, th.accent[1]);
+      ctx.shadowColor = th.glow[0];
       ctx.shadowBlur = 36;
       rr(x, y, w, h, h / 2);
       ctx.fillStyle = g;
@@ -659,7 +832,7 @@
       rows.push(arr);
       idx += inRow;
     }
-    var areaTop = 330, areaBottom = 1490;
+    var areaTop = 310, areaBottom = 1420;
     var totalH = m.rows * m.th + (m.rows - 1) * 110;
     var top = areaTop + (areaBottom - areaTop - totalH) / 2;
     var out = [];
@@ -721,23 +894,110 @@
     // 장식 튜브
     var demo = [[0, 4, 7, 2], [3, 8, 1, 5], [6, 9, 10, 3]];
     for (var d = 0; d < 3; d++) {
-      drawTube(cx - 200 + d * 142, 760, 118, 118 * 0 + 118 * 2.3, demo[d], { lift: d === 1 ? 18 : 0 });
+      drawTube(cx - 200 + d * 142, 706, 118, 118 * 2.3, demo[d], { lift: d === 1 ? 18 : 0 });
     }
+
+    // 오늘의 퍼즐(데일리 챌린지) 카드
+    drawDailyCard(190, 1000, W - 380, 132);
 
     var bx2 = 190, bw2 = W - 380;
     var nextLevel = Math.min(save.unlocked, MAX_LEVEL);
-    button(bx2, 1290, bw2, 128, save.unlocked > 1 ? '이어서 하기' : '시작하기',
-      '레벨 ' + nextLevel, { primary: true, size: 46, onTap: function () { sfx('tap'); startLevel(nextLevel); } });
-    button(bx2, 1444, bw2, 112, '레벨 선택', null, { size: 40, onTap: function () { sfx('tap'); S.screen = 'levels'; S.scroll = 0; S.scrollTarget = 0; } });
-    button(bx2, 1580, bw2, 112, '게임 방법', null, { size: 40, onTap: function () { sfx('tap'); S.overlay = 'howto'; } });
+    button(bx2, 1156, bw2, 124, save.unlocked > 1 ? '이어서 하기' : '시작하기',
+      '레벨 ' + nextLevel, { primary: true, size: 44, onTap: function () { sfx('tap'); startLevel(nextLevel); } });
+    button(bx2, 1300, bw2, 104, '레벨 선택', null, { size: 38, onTap: function () { sfx('tap'); S.screen = 'levels'; S.scroll = 0; S.scrollTarget = 0; } });
+    button(bx2, 1424, bw2, 104, '게임 방법', null, { size: 38, onTap: function () { sfx('tap'); S.overlay = 'howto'; } });
 
-    // 사운드 / 설정 아이콘
+    // 수집 현황(별 → 테마 해금)
+    var ts = totalStars();
+    var unlockedThemes = 0;
+    for (var ti = 0; ti < THEMES.length; ti++) if (ts >= THEMES[ti].need) unlockedThemes++;
+    text('★ ' + ts + ' / 360   ·   테마 ' + unlockedThemes + ' / ' + THEMES.length, W / 2, 1582, 28, 700, 'rgba(255,255,255,0.52)');
+
+    // 다음 테마까지 진행률
+    var nextTheme = null;
+    for (var nt = 0; nt < THEMES.length; nt++) {
+      if (ts < THEMES[nt].need) { nextTheme = THEMES[nt]; break; }
+    }
+    if (nextTheme) {
+      var left = nextTheme.need - ts;
+      text('다음 테마까지 별 ' + left + '개', W / 2, 1640, 23, 700, 'rgba(255,255,255,0.42)');
+      var pw = 520, px = (W - pw) / 2, py = 1666;
+      ctx.save();
+      rr(px, py, pw, 12, 6);
+      ctx.fillStyle = 'rgba(255,255,255,0.10)';
+      ctx.fill();
+      var pct = Math.max(0.02, Math.min(1, ts / nextTheme.need));
+      rr(px, py, pw * pct, 12, 6);
+      var pg = ctx.createLinearGradient(px, 0, px + pw, 0);
+      pg.addColorStop(0, themeNow().accent[0]);
+      pg.addColorStop(1, themeNow().accent[1]);
+      ctx.fillStyle = pg;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 사운드 / 설정 / 테마 아이콘
     drawIconButton(W - 110, 110, save.sound ? 'sound' : 'mute', function () {
       save.sound = !save.sound; writeSave(); sfx('tap');
     });
     drawIconButton(W - 200, 110, 'gear', function () { sfx('tap'); S.overlay = 'settings'; });
+    drawIconButton(W - 290, 110, 'palette', function () { sfx('tap'); S.overlay = 'themes'; });
 
-    text('v1.0.0 · 오프라인 플레이 · 광고 포함', W / 2, 1810, 26, 400, 'rgba(255,255,255,0.34)');
+    text('v1.1.0 · 오프라인 플레이 · 광고 포함', W / 2, 1782, 26, 400, 'rgba(255,255,255,0.34)');
+  }
+
+  // 오늘의 퍼즐 카드: 연속 일수와 완료 여부를 보여준다.
+  function drawDailyCard(x, y, w, h) {
+    var th = themeNow();
+    var done = dailyDoneToday();
+    var streak = save.daily.streak || 0;
+    ctx.save();
+    rr(x, y, w, h, 34);
+    var g = ctx.createLinearGradient(x, y, x + w, y + h);
+    g.addColorStop(0, 'rgba(255,255,255,0.12)');
+    g.addColorStop(1, 'rgba(255,255,255,0.05)');
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = done ? 'rgba(255,255,255,0.16)' : th.mark;
+    ctx.globalAlpha = done ? 1 : 0.9;
+    ctx.stroke();
+    ctx.restore();
+
+    // 왼쪽 달력 아이콘
+    var ix = x + 66, iy = y + h / 2;
+    ctx.save();
+    rr(ix - 32, iy - 34, 64, 64, 14);
+    ctx.fillStyle = done ? 'rgba(255,255,255,0.14)' : th.mark;
+    ctx.fill();
+    ctx.fillStyle = 'rgba(10,8,26,0.85)';
+    ctx.fillRect(ix - 32, iy - 34, 64, 16);
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.font = font(26, 900);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(done ? '✓' : String(new Date().getDate()), ix, iy + 6);
+    ctx.restore();
+
+    text('오늘의 퍼즐', x + 120, y + 48, 34, 900, '#FFFFFF', 'left');
+    text(done ? '오늘 완료 · 내일 새 퍼즐' : '매일 바뀌는 퍼즐 · 별 최대 3개',
+      x + 120, y + 92, 24, 400, 'rgba(255,255,255,0.60)', 'left');
+
+    // 오른쪽 연속 배지
+    var chipW = 148, chipX = x + w - chipW - 22, chipY = y + 26;
+    ctx.save();
+    rr(chipX, chipY, chipW, 80, 26);
+    ctx.fillStyle = done ? 'rgba(255,255,255,0.10)' : 'rgba(255,201,60,0.16)';
+    ctx.fill();
+    ctx.restore();
+    text('연속', chipX + chipW / 2, chipY + 24, 22, 700, 'rgba(255,255,255,0.62)');
+    text(streak + '일', chipX + chipW / 2, chipY + 56, 32, 900, done ? 'rgba(255,255,255,0.86)' : C.amber);
+
+    hit(x, y, w, h, function () {
+      sfx('tap');
+      if (dailyDoneToday()) toast('오늘의 퍼즐 완료 · 연습으로 다시 풀 수 있어요');
+      startDaily();
+    });
   }
 
   function drawIconButton(x, y, kind, onTap) {
@@ -766,6 +1026,17 @@
       } else {
         ctx.beginPath(); ctx.moveTo(x + 14, y - 12); ctx.lineTo(x + 30, y + 12); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(x + 30, y - 12); ctx.lineTo(x + 14, y + 12); ctx.stroke();
+      }
+    } else if (kind === 'palette') {
+      // 팔레트: 타원 + 물감점
+      ctx.beginPath();
+      ctx.ellipse(x, y + 2, 26, 21, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      var dots = [[-12, -4], [-2, -10], [9, -6], [12, 6], [0, 10]];
+      for (var d2 = 0; d2 < dots.length; d2++) {
+        ctx.beginPath();
+        ctx.arc(x + dots[d2][0], y + dots[d2][1] + 2, 4.5, 0, Math.PI * 2);
+        ctx.fill();
       }
     } else {
       ctx.beginPath(); ctx.arc(x, y, 10, 0, Math.PI * 2); ctx.stroke();
@@ -859,6 +1130,9 @@
       }
 
       if (stars > 0) drawStars(x + CELL / 2, y + CELL / 2 + 44, 13, stars, 3);
+      if (unlocked && save.best[n]) {
+        text('최고 ' + save.best[n] + '수', x + CELL / 2, y + CELL - 24, 19, 700, 'rgba(255,255,255,0.38)');
+      }
       hit(x, y, CELL, CELL, (function (lv) {
         return function () {
           if (lv <= save.unlocked) { sfx('tap'); haptic(8); startLevel(lv); }
@@ -940,8 +1214,10 @@
       S.screen = 'home';
       S.overlay = null;
     });
-    text(S.endless ? '무한 모드' : '레벨 ' + S.level, W / 2, 128, 50, 900, '#FFFFFF');
-    var sub = S.endless ? '레벨 ' + S.level : '기준 ' + S.par + '수';
+    text(S.dailyMode ? '오늘의 퍼즐' : (S.endless ? '무한 모드' : '레벨 ' + S.level), W / 2, 128, 50, 900, '#FFFFFF');
+    var sub = S.dailyMode
+      ? '연속 ' + (save.daily.streak || 0) + '일 · 기준 ' + S.par + '수'
+      : (S.endless ? '레벨 ' + S.level : '기준 ' + S.par + '수');
     text(sub, W / 2, 186, 26, 400, 'rgba(255,255,255,0.45)');
 
     // 이동 수 칩
@@ -1006,6 +1282,16 @@
 
     // 붓는 애니메이션
     if (S.anim) drawPourAnim(m, list);
+
+    // 콤보 표시
+    if (S.combo >= 2 && now() < S.comboUntil && S.comboAt) {
+      var cp = Math.min(1, (S.comboUntil - now()) / 0.4);
+      ctx.save();
+      ctx.globalAlpha = cp;
+      var rise = (1.4 - (S.comboUntil - now())) * 34;
+      text('콤보 ×' + S.combo, S.comboAt.x, S.comboAt.y - 20 - rise, 42, 900, C.amber);
+      ctx.restore();
+    }
 
     // 하단 컨트롤
     var by = 1560, bh = 104, bgap = 18;
@@ -1077,6 +1363,7 @@
     if (S.overlay === 'win') drawWin();
     else if (S.overlay === 'howto') drawHowto();
     else if (S.overlay === 'settings') drawSettings();
+    else if (S.overlay === 'themes') drawThemes();
     else if (S.overlay === 'reward') drawRewardConfirm();
   }
 
@@ -1084,7 +1371,7 @@
     var cw = 860, ch = 820, cx = (W - cw) / 2, cy = (H - ch) / 2 - 40;
     panel(cx, cy, cw, ch, 56, 0.10);
 
-    text('레벨 완료!', W / 2, cy + 130, 68, 900, '#FFFFFF');
+    text(S.dailyMode ? '오늘의 퍼즐 완료!' : '레벨 완료!', W / 2, cy + 122, S.dailyMode ? 58 : 68, 900, '#FFFFFF');
     var stars = S.winStars || 1;
     S.starsShown = Math.min(3, S.starsShown + 0.06);
     for (var i = 0; i < 3; i++) {
@@ -1094,8 +1381,28 @@
     }
     text('이동 ' + S.moves + '수 · 기준 ' + S.par + '수', W / 2, cy + 430, 32, 400, 'rgba(255,255,255,0.62)');
 
+    if (S.dailyMode) {
+      var st = save.daily.streak || 1;
+      text('연속 ' + st + '일째 · 별 +' + stars, W / 2, cy + 480, 30, 700, C.amber);
+    } else {
+      var best = S.endless ? 0 : (save.best[S.level] || 0);
+      if (best) text('최고 기록 ' + best + '수', W / 2, cy + 480, 26, 400, 'rgba(255,255,255,0.50)');
+    }
+
     var bx = cx + 60, bw = cw - 120;
-    button(bx, cy + 510, bw, 120, '다음 레벨', null, {
+    if (S.dailyMode) {
+      button(bx, cy + 540, bw, 120, '홈으로', null, {
+        primary: true, size: 44, onTap: function () {
+          sfx('tap'); S.overlay = null; S.screen = 'home';
+        }
+      });
+      button(bx, cy + 678, bw, 100, '다시 풀기', null, {
+        size: 36, onTap: function () { S.overlay = null; restartLevel(); }
+      });
+      return;
+    }
+
+    button(bx, cy + 540, bw, 120, '다음 레벨', null, {
       primary: true, size: 44, onTap: function () {
         sfx('tap');
         var next = S.level + 1;
@@ -1106,8 +1413,8 @@
         });
       }
     });
-    button(bx, cy + 660, bw, 104, '다시 하기', null, {
-      size: 38, onTap: function () { S.overlay = null; restartLevel(); }
+    button(bx, cy + 678, bw, 100, '다시 하기', null, {
+      size: 36, onTap: function () { S.overlay = null; restartLevel(); }
     });
   }
 
@@ -1138,17 +1445,18 @@
       '같은 색 볼은 여러 개가 한 번에 붓습니다.',
       '한 튜브에 같은 색 볼 4개를 모으면 완성!',
       '막히면 되돌리기·힌트·튜브 추가를 쓰세요.',
-      '인터넷 없이 언제든 즐길 수 있습니다.'
+      '매일 바뀌는 오늘의 퍼즐로 연속 기록에 도전!',
+      '모은 별로 배경 테마를 열 수 있어요.'
     ];
     for (var i = 0; i < lines.length; i++) {
-      var ly = cy + 560 + i * 74;
+      var ly = cy + 528 + i * 64;
       ctx.save();
       ctx.beginPath();
       ctx.arc(cx + 90, ly, 9, 0, Math.PI * 2);
       ctx.fillStyle = i === 0 ? C.pink : 'rgba(255,255,255,0.55)';
       ctx.fill();
       ctx.restore();
-      text(lines[i], cx + 120, ly, 30, 400, 'rgba(255,255,255,0.84)', 'left');
+      text(lines[i], cx + 120, ly, 28, 400, 'rgba(255,255,255,0.84)', 'left');
     }
 
     button(cx + 60, cy + ch - 180, cw - 120, 116, '확인', null, {
@@ -1157,20 +1465,157 @@
   }
 
   function drawSettings() {
-    var cw = 820, ch = 560, cx = (W - cw) / 2, cy = (H - ch) / 2;
+    var cw = 840, ch = 800, cx = (W - cw) / 2, cy = (H - ch) / 2;
     panel(cx, cy, cw, ch, 56, 0.10);
-    text('설정', W / 2, cy + 100, 54, 900, '#FFFFFF');
+    text('설정', W / 2, cy + 90, 52, 900, '#FFFFFF');
 
-    toggleRow(cx + 60, cy + 200, cw - 120, '사운드', save.sound, function () {
+    toggleRow(cx + 60, cy + 160, cw - 120, '사운드', save.sound, function () {
       save.sound = !save.sound; writeSave(); if (save.sound) sfx('tap');
     });
-    toggleRow(cx + 60, cy + 300, cw - 120, '진동', save.haptic, function () {
+    toggleRow(cx + 60, cy + 250, cw - 120, '진동', save.haptic, function () {
       save.haptic = !save.haptic; writeSave(); haptic(12);
     });
 
-    button(cx + 60, cy + ch - 170, cw - 120, 112, '닫기', null, {
+    linkRow(cx + 60, cy + 340, cw - 120, '테마 바꾸기', themeNow().name, function () {
+      sfx('tap'); S.overlay = 'themes';
+    });
+
+    if (privacyOptionsRequired()) {
+      linkRow(cx + 60, cy + 430, cw - 120, '광고 동의 설정', null, function () {
+        sfx('tap');
+        try { window.AndroidHost && window.AndroidHost.showPrivacyOptions(); } catch (e) {}
+      });
+    }
+
+    linkRow(cx + 60, cy + 430 + (privacyOptionsRequired() ? 90 : 0), cw - 120, '개인정보처리방침', null, function () {
+      sfx('tap');
+      try {
+        if (window.AndroidHost && window.AndroidHost.openPrivacyPolicy) {
+          window.AndroidHost.openPrivacyPolicy();
+        } else if (window.open) {
+          window.open('https://lsszz2100.github.io/colorpour-privacy/', '_blank');
+        }
+      } catch (e) {}
+    });
+
+    button(cx + 60, cy + ch - 190, cw - 120, 112, '닫기', null, {
       primary: true, size: 42, onTap: function () { S.overlay = null; sfx('tap'); }
     });
+  }
+
+  // ---------------------------------------------------------------- 화면: 테마 컬렉션
+  function drawThemes() {
+    var cw = 900, ch = 900, cx = (W - cw) / 2, cy = (H - ch) / 2;
+    panel(cx, cy, cw, ch, 56, 0.10);
+    text('테마 컬렉션', W / 2, cy + 84, 50, 900, '#FFFFFF');
+    var ts = totalStars();
+    text('별 ' + ts + '개 모음 · 플레이할수록 해금', W / 2, cy + 142, 26, 400, 'rgba(255,255,255,0.55)');
+
+    var innerW = cw - 100, gapX = 24, cellW = (innerW - gapX) / 2, cellH = 168, gapY = 18;
+    var y0 = cy + 190;
+    for (var i = 0; i < THEMES.length; i++) {
+      var th = THEMES[i];
+      var col = i % 2, row = Math.floor(i / 2);
+      var x = cx + 50 + col * (cellW + gapX);
+      var y = y0 + row * (cellH + gapY);
+      var unlocked = ts >= th.need;
+      var selected = save.theme === th.id;
+
+      ctx.save();
+      rr(x, y, cellW, cellH, 30);
+      var g = ctx.createLinearGradient(x, y, x + cellW, y + cellH);
+      g.addColorStop(0, th.top);
+      g.addColorStop(1, th.bot);
+      ctx.fillStyle = g;
+      ctx.fill();
+      ctx.lineWidth = selected ? 4 : 2;
+      ctx.strokeStyle = selected ? th.mark : 'rgba(255,255,255,0.18)';
+      if (selected) { ctx.shadowColor = th.glow[0]; ctx.shadowBlur = 26; }
+      ctx.stroke();
+      ctx.restore();
+
+      // 색상 미리보기 (작은 볼 3개)
+      for (var b = 0; b < 3; b++) {
+        var bp = PALETTE[(i * 3 + b * 2) % PALETTE.length];
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x + 42 + b * 34, y + 52, 13, 0, Math.PI * 2);
+        ctx.fillStyle = bp[0];
+        ctx.fill();
+        ctx.restore();
+      }
+
+      text(th.name, x + 24, y + 100, 30, 900, unlocked ? '#FFFFFF' : 'rgba(255,255,255,0.45)', 'left');
+      var stateText = selected ? '사용 중' : (unlocked ? '탭해서 적용' : '별 ' + th.need + '개 필요');
+      text(stateText, x + 24, y + 134, 22, 700,
+        selected ? th.mark : (unlocked ? 'rgba(255,255,255,0.62)' : 'rgba(255,255,255,0.38)'), 'left');
+
+      if (!unlocked) {
+        ctx.save();
+        ctx.globalAlpha = 0.5;
+        rr(x, y, cellW, cellH, 30);
+        ctx.fillStyle = 'rgba(6,5,18,0.45)';
+        ctx.fill();
+        ctx.restore();
+        // 자물쇠
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(x + cellW - 46, y + 48, 12, Math.PI, 0);
+        ctx.stroke();
+        rr(x + cellW - 60, y + 48, 28, 24, 6);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      hit(x, y, cellW, cellH, (function (theme) {
+        return function () {
+          if (ts >= theme.need) {
+            save.theme = theme.id; writeSave(); sfx('coin'); haptic(10);
+            toast(theme.name + ' 테마 적용!');
+          } else {
+            sfx('error');
+            toast('별 ' + theme.need + '개를 모으면 열려요');
+          }
+        };
+      })(th));
+    }
+
+    button(cx + 60, cy + ch - 160, cw - 120, 112, '닫기', null, {
+      primary: true, size: 42, onTap: function () { S.overlay = null; sfx('tap'); }
+    });
+  }
+
+  function privacyOptionsRequired() {
+    try {
+      if (window.AndroidHost && typeof window.AndroidHost.isPrivacyOptionsRequired === 'function') {
+        return !!window.AndroidHost.isPrivacyOptionsRequired();
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function linkRow(x, y, w, label, value, onTap) {
+    ctx.save();
+    rr(x, y, w, 78, 24);
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fill();
+    ctx.restore();
+    text(label, x + 32, y + 39, 32, 700, 'rgba(255,255,255,0.9)', 'left');
+    if (value) text(value, x + w - 60, y + 39, 26, 700, 'rgba(255,255,255,0.55)', 'right');
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+    ctx.lineWidth = 3.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x + w - 38, y + 28);
+    ctx.lineTo(x + w - 24, y + 39);
+    ctx.lineTo(x + w - 38, y + 50);
+    ctx.stroke();
+    ctx.restore();
+    hit(x, y, w, 78, onTap);
   }
 
   function toggleRow(x, y, w, label, on, onTap) {
@@ -1247,6 +1692,7 @@
   // ---------------------------------------------------------------- 루프
   function update(dt) {
     S.time += dt;
+    updateParticles(dt);
     if (S.anim) {
       S.anim.t += dt;
       if (S.anim.t >= ANIM_DUR) {
@@ -1271,6 +1717,7 @@
     else if (S.screen === 'levels') drawLevels();
     else drawGame();
     if (S.screen === 'game' || S.screen === 'levels' || S.screen === 'home') drawOverlay();
+    if (S.screen === 'game') drawParticles();
     drawToast();
   }
 
@@ -1292,7 +1739,7 @@
   }
 
   function onDown(ev) {
-    if (S.overlay === 'win' || S.overlay === 'reward' || S.overlay === 'howto' || S.overlay === 'settings') {
+    if (S.overlay === 'win' || S.overlay === 'reward' || S.overlay === 'howto' || S.overlay === 'settings' || S.overlay === 'themes') {
       S.drag = { startY: ev.clientY, scrollStart: S.scrollTarget, moved: false, overlay: true };
       return;
     }
@@ -1374,9 +1821,39 @@
   // ---------------------------------------------------------------- 스크린샷 내보내기(개발용)
   window.__shot = function (scene, caption, name) {
     var prevScreen = S.screen, prevOverlay = S.overlay;
+    S.toastUntil = 0;
+    S.toastText = '';
     if (scene === 'home') { S.screen = 'home'; S.overlay = null; }
-    else if (scene === 'levels') { S.screen = 'levels'; S.scroll = 0; S.scrollTarget = 0; S.overlay = null; }
-    else if (scene === 'win') {
+    else if (scene === 'levels') {
+      S.screen = 'levels'; S.scroll = 0; S.scrollTarget = 0; S.overlay = null;
+      if (!window.__shotSaveBak) {
+        window.__shotSaveBak = { unlocked: save.unlocked, stars: JSON.parse(JSON.stringify(save.stars)) };
+      }
+      save.unlocked = 49;
+      save.stars = {};
+      for (var sl = 1; sl <= 48; sl++) save.stars[sl] = (sl % 7 === 0) ? 2 : ((sl % 5 === 0) ? 2 : 3);
+      save.stars[48] = 0;
+    }
+    else if (scene === 'daily') {
+      startDaily();
+      save.daily.streak = Math.max(3, save.daily.streak || 0);
+      S.overlay = null;
+    }
+    else if (scene === 'dailywin') {
+      startDaily();
+      S.moves = Math.max(8, Math.round(S.par * 0.92));
+      S.winStars = 3;
+      S.overlay = 'win';
+      S.starsShown = 3;
+      save.daily.streak = Math.max(1, save.daily.streak || 0);
+    }
+    else if (scene === 'themes') {
+      if (!window.__shotThemeBak) window.__shotThemeBak = save.daily.totalStars || 0;
+      save.daily.totalStars = Math.max(save.daily.totalStars || 0, 160);
+      S.screen = 'home';
+      S.overlay = 'themes';
+    }
+    else if (scene.indexOf('win') === 0) {
       var wl = parseInt(scene.split(':')[1] || '14', 10);
       startLevel(wl); S.moves = Math.max(8, Math.round(S.par * 0.95)); S.winStars = 3;
       S.overlay = 'win'; S.starsShown = 3;
@@ -1429,11 +1906,18 @@
     setTimeout(function () { a.remove(); }, 400);
 
     S.screen = prevScreen; S.overlay = prevOverlay;
+    if (window.__shotThemeBak !== undefined && scene === 'themes') {
+      save.daily.totalStars = window.__shotThemeBak;
+    }
   };
 
   // 테스트용 훅(게임 로직 검증)
   window.__cp = {
     S: S, save: save, startLevel: startLevel, startEndless: startEndless,
+    startDaily: startDaily, genPuzzle: genPuzzle, totalStars: totalStars,
+    THEMES: THEMES, themeNow: themeNow, finishWin: finishWin,
+    todayKey: todayKey, yesterdayKey: yesterdayKey, dailyDoneToday: dailyDoneToday,
+    useHint: useHint, askReward: askReward, grantReward: grantReward,
     canPour: canPour, pour: pour, commitPour: commitPour,
     solveHint: solveHint, isSolvedState: isSolvedState, tapTube: tapTube, undo: undo
   };
@@ -1443,25 +1927,46 @@
     var dbg = document.getElementById('debug');
     dbg.style.display = 'flex';
     var shots = [
-      ['홈', 'home', ['오프라인으로 즐기는', '데이터 필요 없는 두뇌 퍼즐']],
-      ['레벨선택', 'levels', ['120개 스테이지', '별 3개에 도전하세요']],
-      ['게임14', 'game:14:6', ['탭 한 번으로 붓기', '같은 색 볼을 한 튜브에']],
-      ['게임96', 'game:96:9', ['막혔다면 힌트', '두뇌를 깨우는 색상 정렬']],
-      ['클리어', 'win:20', ['레벨 클리어!', '별 3개를 노려보세요']]
+      ['홈', 'home', ['오프라인으로 즐기는', '데이터 필요 없는 두뇌 퍼즐'], 'kr-1'],
+      ['레벨선택', 'levels', ['120개 스테이지', '별 3개에 도전하세요'], 'kr-2'],
+      ['게임14', 'game:14:6', ['탭 한 번으로 붓기', '같은 색 볼을 한 튜브에'], 'kr-3'],
+      ['게임96', 'game:96:9', ['막혔다면 힌트', '두뇌를 깨우는 색상 정렬'], 'kr-4'],
+      ['데일리', 'daily', ['매일 바뀌는 오늘의 퍼즐', '연속 기록에 도전하세요'], 'kr-5'],
+      ['테마', 'themes', ['별로 여는 테마 5종', '나만의 배경으로 플레이'], 'kr-6'],
+      ['클리어', 'win:20', ['레벨 클리어!', '별 3개를 노려보세요'], 'kr-7']
     ];
     shots.forEach(function (s, idx) {
       var b = document.createElement('button');
       b.textContent = s[0];
       b.onclick = function () {
-        window.__shot(s[1], s[2], 'colorpour-' + (idx + 1) + '.png');
+        window.__shot(s[1], s[2], s[3] + '.png');
       };
       dbg.appendChild(b);
     });
+
+    var enShots = [
+      ['EN홈', 'home', ['Relaxing offline puzzle', 'No wifi? No problem'], 'en-1'],
+      ['EN레벨', 'levels', ['120 handcrafted stages', 'Chase three stars'], 'en-2'],
+      ['EN게임', 'game:14:6', ['Tap to pour', 'One-hand color sorting'], 'en-3'],
+      ['EN게임96', 'game:96:9', ['Stuck? Use a hint', 'Daily brain training'], 'en-4'],
+      ['EN데일리', 'daily', ["Today's puzzle", 'Build your daily streak'], 'en-5'],
+      ['EN테마', 'themes', ['Unlock 5 color themes', 'Collect stars to open them'], 'en-6'],
+      ['EN클리어', 'win:20', ['Level clear!', 'Aim for three stars'], 'en-7']
+    ];
+    enShots.forEach(function (s) {
+      var b = document.createElement('button');
+      b.textContent = s[0];
+      b.onclick = function () {
+        window.__shot(s[1], s[2], s[3] + '.png');
+      };
+      dbg.appendChild(b);
+    });
+
     var b2 = document.createElement('button');
     b2.textContent = '전체';
     b2.onclick = function () {
       shots.forEach(function (s, idx) {
-        setTimeout(function () { window.__shot(s[1], s[2], 'colorpour-' + (idx + 1) + '.png'); }, idx * 700);
+        setTimeout(function () { window.__shot(s[1], s[2], s[3] + '.png'); }, idx * 700);
       });
     };
     dbg.appendChild(b2);

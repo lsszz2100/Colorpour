@@ -32,3 +32,7 @@ __pycache__/
 *.pyc
 # 임시 산출물
 assets-src/_*.png
+
+# 로컬 QA 산출물
+qa-shots/
+/?/

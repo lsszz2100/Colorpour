@@ -1,11 +1,15 @@
 package com.mrlee.colorpour
 
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -29,13 +33,17 @@ import com.google.android.gms.ads.interstitial.InterstitialAd
 import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
 import com.google.android.gms.ads.rewarded.RewardedAd
 import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
+import com.google.android.ump.ConsentInformation
+import com.google.android.ump.ConsentRequestParameters
+import com.google.android.ump.UserMessagingPlatform
 
 /**
  * Color Pour: 볼 정렬 퍼즐
  *
  * - 게임 본체는 assets/ 안의 오프라인 HTML5(Canvas) 게임이며 https://appassets.androidplatform.net
  *   (WebViewAssetLoader)로만 로드한다. 파일 접근/외부 탐색은 차단한다.
- * - 광고는 AdMob 배너(하단 고정)·전면(레벨 전환 시)·보상형(되돌리기/힌트/튜브 추가)만 사용한다.
+ * - 광고는 AdMob 배너(하단 고정)·전면(레벨 전환 시)·보상형(되돌리기/힌트/튜브 추가)만 사용하며,
+ *   광고 초기화 전에 Google UMP 동의 흐름을 거친다.
  */
 class MainActivity : ComponentActivity() {
 
@@ -51,11 +59,17 @@ class MainActivity : ComponentActivity() {
         private const val REWARD_HINT = "hint"
         private const val REWARD_UNDO = "undo"
         private const val REWARD_TUBE = "tube"
+
+        private const val APP_ASSETS_HOST = "appassets.androidplatform.net"
+        private const val PRIVACY_URL = "https://lsszz2100.github.io/colorpour-privacy/"
     }
 
     private lateinit var webView: WebView
     private lateinit var adContainer: FrameLayout
     private var bannerAd: AdView? = null
+
+    private lateinit var consentInformation: ConsentInformation
+    private var adsInitialised = false
 
     @Volatile
     private var interstitialAd: InterstitialAd? = null
@@ -77,6 +91,8 @@ class MainActivity : ComponentActivity() {
 
     @Volatile
     private var rewardEarned = false
+
+    private var recoveringRenderer = false
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -129,6 +145,39 @@ class MainActivity : ComponentActivity() {
             }
         })
 
+        requestConsentThenLoadAds()
+    }
+
+    // ---------------------------------------------------------------- 동의(UMP)
+
+    /**
+     * Google UMP 동의 흐름. EEA/영국 등 동의가 필요한 지역에서만 양식이 뜨고,
+     * 그 밖의 지역에서는 곧바로 광고를 초기화한다. 동의를 거부해도 앱은 그대로
+     * 동작하며 개인화 광고만 사용하지 않는다.
+     */
+    private fun requestConsentThenLoadAds() {
+        consentInformation = UserMessagingPlatform.getConsentInformation(this)
+        val params = ConsentRequestParameters.Builder()
+            .setTagForUnderAgeOfConsent(false)
+            .build()
+        consentInformation.requestConsentInfoUpdate(
+            this,
+            params,
+            {
+                UserMessagingPlatform.loadAndShowConsentFormIfRequired(this) {
+                    if (consentInformation.canRequestAds()) startAds()
+                }
+            },
+            {
+                // 정보 갱신 실패: 허용된 경우에만 광고를 시작한다.
+                if (consentInformation.canRequestAds()) startAds()
+            }
+        )
+    }
+
+    private fun startAds() {
+        if (adsInitialised) return
+        adsInitialised = true
         initAds()
     }
 
@@ -168,26 +217,58 @@ class MainActivity : ComponentActivity() {
             allowContentAccess = false
             allowFileAccessFromFileURLs = false
             allowUniversalAccessFromFileURLs = false
+            setGeolocationEnabled(false)
+            setSupportMultipleWindows(false)
             setSupportZoom(false)
             builtInZoomControls = false
             displayZoomControls = false
+            saveFormData = false
             mediaPlaybackRequiresUserGesture = false
             cacheMode = WebSettings.LOAD_DEFAULT
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            userAgentString = "$userAgentString ColorPour/1.0"
+            userAgentString = "$userAgentString ColorPour/1.1"
         }
 
         webView.webViewClient = object : WebViewClient() {
+            // 앱 자산(appassets) 외의 요청은 네트워크로 나가지 않도록 차단한다.
             override fun shouldInterceptRequest(
                 view: WebView,
                 request: WebResourceRequest
-            ): WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
+            ): WebResourceResponse? {
+                val url = request.url
+                val scheme = url.scheme ?: ""
+                if (scheme == "https" || scheme == "http") {
+                    if (url.host != APP_ASSETS_HOST) {
+                        return WebResourceResponse(
+                            "text/plain", "utf-8", 403, "Forbidden",
+                            mapOf("Cache-Control" to "no-store"), null
+                        )
+                    }
+                    return assetLoader.shouldInterceptRequest(url)
+                }
+                return null
+            }
 
             // 앱 자산 외의 페이지로는 이동하지 않는다 (외부 링크/리다이렉트 차단)
             override fun shouldOverrideUrlLoading(
                 view: WebView,
                 request: WebResourceRequest
             ): Boolean = true
+
+            // 렌더러가 죽어도 앱이 함께 죽지 않도록 화면을 다시 만든다.
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: RenderProcessGoneDetail?
+            ): Boolean {
+                if (recoveringRenderer) {
+                    finish()
+                    return true
+                }
+                recoveringRenderer = true
+                view?.destroy()
+                recreate()
+                return true
+            }
         }
 
         webView.addJavascriptInterface(Bridge(), "AndroidHost")
@@ -242,7 +323,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                override fun onAdFailedToLoad(error: LoadError) {
+                override fun onAdFailedToLoad(error: LoadAdError) {
                     interstitialLoading = false
                     interstitialAd = null
                 }
@@ -282,7 +363,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                override fun onAdFailedToLoad(error: LoadError) {
+                override fun onAdFailedToLoad(error: LoadAdError) {
                     rewardedLoading = false
                     rewardedAd = null
                 }
@@ -351,6 +432,36 @@ class MainActivity : ComponentActivity() {
             } else {
                 @Suppress("DEPRECATION")
                 vibrator.vibrate(ms.toLong())
+            }
+        }
+
+        /** 광고 동의를 다시 설정하는 UMP 양식을 연다. */
+        @JavascriptInterface
+        fun showPrivacyOptions(): Boolean {
+            if (!::consentInformation.isInitialized) return false
+            runOnUiThread {
+                UserMessagingPlatform.showPrivacyOptionsForm(this@MainActivity) { }
+            }
+            return true
+        }
+
+        /** 이 지역/설정에서 동의 재설정 항목이 필요한지. */
+        @JavascriptInterface
+        fun isPrivacyOptionsRequired(): Boolean {
+            if (!::consentInformation.isInitialized) return false
+            return consentInformation.privacyOptionsRequirementStatus ==
+                ConsentInformation.PrivacyOptionsRequirementStatus.REQUIRED
+        }
+
+        /** 개인정보처리방침 페이지를 기본 브라우저로 연다. */
+        @JavascriptInterface
+        fun openPrivacyPolicy() {
+            runOnUiThread {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_URL)))
+                } catch (e: ActivityNotFoundException) {
+                    // 브라우저가 없는 기기: 조용히 무시
+                }
             }
         }
 

@@ -9,7 +9,12 @@ from fontTools.ttLib import TTFont
 from fontTools.subset import Subsetter, Options
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC_VAR = Path("/tmp/noto_test.ttf")
+# 가변 폰트 원본 위치: 저장소 밖(work/tools/fonts) 우선, 없으면 /tmp
+SRC_CANDIDATES = [
+    Path("/workspace/work/tools/fonts/NotoSansKR[wght].ttf"),
+    Path("/tmp/noto_test.ttf"),
+]
+SRC_VAR = next((p for p in SRC_CANDIDATES if p.exists()), SRC_CANDIDATES[0])
 OUT = ROOT / "app/src/main/assets/fonts"
 WEIGHTS = {"Regular": 400, "Bold": 700, "Black": 900}
 

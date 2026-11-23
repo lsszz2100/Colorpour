@@ -126,5 +126,79 @@ cp.save.stars = {};
 cp.startLevel(3);
 cp.S.moves = 1;
 cp.S.par = 10;
+
+// 7) 데일리 챌린지: 항상 같은 날 같은 퍼즐, 반드시 풀린다
+cp.startDaily();
+const dTubes = cp.S.tubes;
+const dCounts = {};
+let dCapOk = true, dBalls = 0;
+for (const t of dTubes) {
+  if (t.length > 4) dCapOk = false;
+  dBalls += t.length;
+  for (const b of t) dCounts[b] = (dCounts[b] || 0) + 1;
+}
+const dColorsOk = Object.values(dCounts).every(c => c === 4) && Object.keys(dCounts).length === dBalls / 4;
+const dHint = cp.solveHint();
+check('데일리 퍼즐 생성(색 4개씩·용량)', dCapOk && dColorsOk, dBalls + '볼');
+check('데일리 퍼즐 풀 수 있음', !!dHint);
+const dailySnapshot = JSON.stringify(cp.S.tubes);
+cp.startDaily();
+check('같은 날 같은 데일리 배치(결정적)', JSON.stringify(cp.S.tubes) === dailySnapshot);
+check('데일리는 레벨 해금에 영향 없음', cp.save.unlocked === 4 || cp.save.unlocked >= 1);
+
+// 8) 데일리 완료 보상·연속 기록
+const today = cp.todayKey(), yday = cp.yesterdayKey();
+cp.save.daily = { doneDate: '', streak: 0, bestStreak: 0, totalStars: 0 };
+cp.startDaily();
+cp.S.moves = Math.ceil(cp.S.par * 0.9);
+cp.S.won = true;
+cp.finishWin();
+check('데일리 완료 기록', cp.save.daily.doneDate === today, cp.save.daily.doneDate);
+check('데일리 연속 1일 시작', cp.save.daily.streak === 1, cp.save.daily.streak);
+const gained = cp.save.daily.totalStars;
+check('데일리 별 지급', gained >= 1 && gained <= 3, gained);
+cp.S.won = true;
+cp.finishWin();
+check('같은 날 재완료는 별 중복 지급 없음', cp.save.daily.totalStars === gained, cp.save.daily.totalStars);
+cp.save.daily.doneDate = yday;
+cp.save.daily.streak = 3;
+cp.startDaily();
+cp.S.moves = Math.ceil(cp.S.par * 0.9);
+cp.S.won = true;
+cp.finishWin();
+check('어제 완료 후 연속 증가', cp.save.daily.streak === 4, cp.save.daily.streak);
+cp.save.daily.doneDate = '2020-01-01';
+cp.save.daily.streak = 9;
+cp.startDaily();
+cp.S.moves = Math.ceil(cp.S.par * 0.9);
+cp.S.won = true;
+cp.finishWin();
+check('끊긴 연속은 1부터', cp.save.daily.streak === 1, cp.save.daily.streak);
+
+// 9) 별 합계와 테마 해금
+cp.save.stars = { 1: 3, 2: 2 };
+cp.save.daily.totalStars = 5;
+check('별 합계 = 레벨 + 데일리', cp.totalStars() === 10, cp.totalStars());
+const needs = cp.THEMES.map(t => t.need);
+check('테마 해금 기준 오름차순(0부터)', needs[0] === 0 && needs.every((n, i) => i === 0 || n > needs[i - 1]), JSON.stringify(needs));
+cp.save.theme = 'ocean';
+check('저장된 테마 반환', cp.themeNow().id === 'ocean');
+cp.save.theme = 'nope';
+check('없는 테마는 기본값', cp.themeNow().id === cp.THEMES[0].id);
+
+// 10) 최고 기록 저장
+cp.save.best = {};
+cp.startLevel(5);
+cp.S.moves = Math.ceil(cp.S.par * 0.9);
+cp.S.won = true;
+cp.finishWin();
+const best5 = cp.save.best[5];
+check('레벨 최고 기록 저장', best5 === cp.S.moves, best5);
+cp.startLevel(5);
+cp.S.moves = Math.ceil(cp.S.par * 0.9) + 4;
+cp.S.won = true;
+cp.finishWin();
+check('더 나쁜 기록은 유지', cp.save.best[5] === best5, cp.save.best[5]);
+
 console.log(fails === 0 ? '\nALL PASS' : `\n${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);

@@ -5,14 +5,14 @@ plugins {
 
 android {
     namespace 'com.mrlee.colorpour'
-    compileSdk 35
+    compileSdk 36
 
     defaultConfig {
         applicationId "com.mrlee.colorpour"
         minSdk 24
-        targetSdk 35
-        versionCode 1
-        versionName "1.0.0"
+        targetSdk 36
+        versionCode 3
+        versionName "1.1.0"
         resourceConfigurations += ['ko', 'en']
     }
 
@@ -67,6 +67,9 @@ android {
 dependencies {
     implementation 'androidx.core:core-ktx:1.13.1'
     implementation 'androidx.activity:activity-ktx:1.9.3'
+    // AdMob이 끌어오는 구버전 fragment 대신 최신 안정 버전을 쓴다 (Play Console 오래된 SDK 경고 대응)
+    implementation 'androidx.fragment:fragment-ktx:1.8.5'
     implementation 'androidx.webkit:webkit:1.12.1'
     implementation 'com.google.android.gms:play-services-ads:23.6.0'
+    implementation 'com.google.android.ump:user-messaging-platform:3.2.0'
 }
